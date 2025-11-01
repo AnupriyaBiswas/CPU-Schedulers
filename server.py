@@ -2,19 +2,22 @@ from flask import Flask, request, jsonify, send_from_directory
 import subprocess
 import os
 import sys
+import tempfile
 
 app = Flask(__name__)
 
 # Serve the main HTML page
 @app.route('/')
 def index():
-    return send_from_directory('frontend', 'index.html')
+    # CHANGE: Remove 'frontend' folder since your files are in root
+    return send_from_directory('.', 'index.html')
 
 # Serve static files (CSS, JS)
 @app.route('/<path:filename>')
 def serve_static(filename):
     if filename in ['styles.css', 'app.js']:
-        return send_from_directory('frontend', filename)
+        # CHANGE: Remove 'frontend' folder reference
+        return send_from_directory('.', filename)
     return "File not found", 404
 
 @app.route('/run-scheduler', methods=['POST'])
@@ -23,65 +26,79 @@ def run_scheduler():
         data = request.json
         print(f"Received data: {data}")  # Debug print
         
-        # Build input text for the C++ program
-        input_text = f"{data['operation']}\n{data['algorithms']}\n{data['last_instant']}\n{data['process_count']}\n"
-        for process in data['processes']:
-            input_text += f"{process}\n"
+        # CHANGE: Use temporary file instead of direct input (more reliable)
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as temp_file:
+            temp_file.write(f"{data['operation']}\n")
+            temp_file.write(f"{data['algorithms']}\n")
+            temp_file.write(f"{data['last_instant']}\n")
+            temp_file.write(f"{data['process_count']}\n")
+            
+            for process in data['processes']:
+                temp_file.write(f"{process}\n")
+            
+            temp_filename = temp_file.name
         
-        print(f"Input text:\n{input_text}")  # Debug print
-        
-        # Check if executable exists
-        executable_path = './src/executable.exe'
+        # CHANGE: Handle both .exe and non-.exe versions for cross-platform
+        executable_path = './src/executable'  # Linux/Mac (Render uses Linux)
         if not os.path.exists(executable_path):
-            return jsonify({'error': f'Executable not found at {executable_path}. Current directory: {os.getcwd()}'}), 500
+            executable_path = './src/executable.exe'  # Windows fallback
         
-        # Check if executable is actually executable
-        if not os.access(executable_path, os.X_OK):
-            return jsonify({'error': f'Executable at {executable_path} is not executable'}), 500
+        if not os.path.exists(executable_path):
+            return jsonify({'error': f'Executable not found. Current directory: {os.getcwd()}. Contents: {os.listdir(".")}'})
         
-        # Run the C++ executable with input
         print(f"Executing: {executable_path}")
         result = subprocess.run(
             [executable_path],
-            input=input_text.encode('utf-8'),
+            stdin=open(temp_filename, 'r'),  # CHANGE: Use file input instead of pipe
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=15,
-            cwd=os.getcwd()
+            timeout=30,  # CHANGE: Increase timeout for complex calculations
+            text=True  # CHANGE: Use text=True instead of manual encoding
         )
         
+        # Clean up temporary file
+        os.unlink(temp_filename)
+        
         print(f"Return code: {result.returncode}")
-        print(f"Stdout: {result.stdout.decode('utf-8')}")
-        print(f"Stderr: {result.stderr.decode('utf-8')}")
+        print(f"Stdout: {result.stdout}")
+        print(f"Stderr: {result.stderr}")
         
         if result.returncode != 0:
-            stderr_output = result.stderr.decode('utf-8')
-            stdout_output = result.stdout.decode('utf-8')
             error_msg = f"Execution failed with return code {result.returncode}.\n"
-            error_msg += f"Stderr: {stderr_output}\n"
-            error_msg += f"Stdout: {stdout_output}\n"
-            error_msg += f"Input was: {input_text}"
+            error_msg += f"Stderr: {result.stderr}\n"
+            error_msg += f"Stdout: {result.stdout}"
             return jsonify({'error': error_msg}), 500
             
-        output = result.stdout.decode('utf-8')
+        output = result.stdout
         if not output.strip():
             return jsonify({'error': 'No output received from executable'}), 500
             
         return jsonify({'output': output})
         
     except subprocess.TimeoutExpired:
-        return jsonify({'error': 'Execution timed out (15 seconds)'}), 500
+        return jsonify({'error': 'Execution timed out (30 seconds)'}), 500
     except FileNotFoundError as e:
         return jsonify({'error': f'File not found: {str(e)}'}), 500
     except Exception as e:
         return jsonify({'error': f'Server error: {str(e)}'}), 500
 
 if __name__ == '__main__':
+    # CHANGE: Production-ready configuration
+    port = int(os.environ.get('PORT', 5000))  # Render provides PORT env var
+    debug_mode = os.environ.get('FLASK_ENV') == 'development'
+    
     print(f"Starting server in directory: {os.getcwd()}")
-    print(f"Checking for executable at: ./src/executable.exe")
-    if os.path.exists('./src/executable.exe'):
-        print("✓ Executable found!")
-    else:
+    print(f"Checking for executable...")
+    
+    # Check both possible executable names
+    exe_found = False
+    for exe_name in ['./src/executable', './src/executable.exe']:
+        if os.path.exists(exe_name):
+            print(f"✓ Executable found: {exe_name}")
+            exe_found = True
+            break
+    
+    if not exe_found:
         print("✗ Executable NOT found!")
         print("Available files in src/:")
         if os.path.exists('src'):
@@ -89,4 +106,5 @@ if __name__ == '__main__':
         else:
             print("src/ directory doesn't exist!")
     
-    app.run(debug=True, host='127.0.0.1', port=5000)
+    # CHANGE: Bind to 0.0.0.0 for Render (not 127.0.0.1)
+    app.run(debug=debug_mode, host='0.0.0.0', port=port)

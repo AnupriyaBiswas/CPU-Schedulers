@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: cpu-scheduling-simulator
+    env: python
+    buildCommand: "pip install -r requirements.txt && g++ -o src/executable src/main.cpp"
+    startCommand: "python server.py"
+    plan: free
